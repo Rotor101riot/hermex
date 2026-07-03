@@ -183,6 +183,33 @@ final class CliSessionsSyncModelTests: APIClientTestCase {
         )
     }
 
+    @MainActor
+    func testRapidReToggleCancelsTheStaleWriteAndIgnoresItsFailure() async {
+        // The write for `false` fails; the follow-up write for `true` succeeds.
+        // The stale failure must neither revert the newer value nor surface an
+        // error, and the superseded task must be cancelled.
+        let model = makeModel(server: serverA) { value in
+            if value == false { throw URLError(.timedOut) }
+        }
+        model.adopt(serverValue: true)
+
+        model.setShowsCliSessions(false)
+        let staleWrite = model.pendingWrite
+        model.setShowsCliSessions(true)
+
+        XCTAssertEqual(staleWrite?.isCancelled, true)
+
+        await staleWrite?.value
+        await model.pendingWrite?.value
+
+        XCTAssertTrue(model.showsCliSessions)
+        XCTAssertNil(model.syncErrorMessage)
+        XCTAssertEqual(
+            defaults.object(forKey: SessionRowDisplaySettings.showCliSessionsKey(for: serverA)) as? Bool,
+            true
+        )
+    }
+
     // MARK: - Per-server isolation
 
     @MainActor

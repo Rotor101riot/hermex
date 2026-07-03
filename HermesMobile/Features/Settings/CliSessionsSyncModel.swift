@@ -71,6 +71,10 @@ final class CliSessionsSyncModel {
 
         writeGeneration += 1
         let generation = writeGeneration
+        // Cancel the superseded write so rapid re-toggles don't race each other
+        // at the server; its failure path is additionally ignored via the
+        // generation guard below.
+        pendingWrite?.cancel()
         pendingWrite = Task { [weak self] in
             guard let self else { return }
             do {
