@@ -38,8 +38,12 @@ final class ArchivedSessionsViewModel {
             let response = try await client.sessions(includeArchived: true)
             sessions = (response.sessions ?? []).filter { $0.archived == true }
         } catch {
-            lastError = error
-            errorMessage = error.localizedDescription
+            // A cancelled load (pull-to-refresh superseding `.task`, or the view
+            // disappearing) is not a failure — don't flash an error state.
+            if !Self.isCancellationError(error) {
+                lastError = error
+                errorMessage = error.localizedDescription
+            }
         }
 
         isLoading = false
@@ -78,8 +82,10 @@ final class ArchivedSessionsViewModel {
             return true
         } catch {
             restore(removedSession)
-            lastError = error
-            actionErrorMessage = error.localizedDescription
+            if !Self.isCancellationError(error) {
+                lastError = error
+                actionErrorMessage = error.localizedDescription
+            }
             return false
         }
     }
@@ -116,5 +122,23 @@ final class ArchivedSessionsViewModel {
         guard let value else { return nil }
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
+    }
+
+    /// Mirrors `SessionListViewModel`'s cancellation check: a `CancellationError`
+    /// or a (possibly `APIError.network`-wrapped) `URLError.cancelled`.
+    private static func isCancellationError(_ error: Error) -> Bool {
+        if error is CancellationError {
+            return true
+        }
+
+        let underlying: Error
+        if case APIError.network(let wrapped) = error {
+            underlying = wrapped
+        } else {
+            underlying = error
+        }
+
+        guard let urlError = underlying as? URLError else { return false }
+        return urlError.code == .cancelled
     }
 }

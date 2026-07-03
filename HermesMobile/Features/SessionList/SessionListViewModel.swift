@@ -154,8 +154,7 @@ final class SessionListViewModel {
         do {
             let response = try await client.sessions()
             let visibleSessions = (response.sessions ?? []).filter { $0.archived != true }
-            applySessions(visibleSessions, animation: animation)
-            archivedCount = response.archivedCount
+            applySessions(visibleSessions, archivedCount: response.archivedCount, animation: animation)
             isViewingCachedData = false
 
             if let modelContext {
@@ -858,14 +857,22 @@ final class SessionListViewModel {
         .joined(separator: " ")
     }
 
-    private func applySessions(_ newSessions: [SessionSummary], animation: Animation?) {
+    /// `archivedCount` is applied inside the same transaction as the rows so the
+    /// bottom Archived entry inserts/removes with the list mutation animation.
+    private func applySessions(
+        _ newSessions: [SessionSummary],
+        archivedCount newArchivedCount: Int?,
+        animation: Animation?
+    ) {
         guard let animation else {
             sessions = newSessions
+            archivedCount = newArchivedCount
             return
         }
 
         withAnimation(animation) {
             sessions = newSessions
+            archivedCount = newArchivedCount
         }
     }
 
