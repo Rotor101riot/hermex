@@ -4593,6 +4593,8 @@ final class ChatViewModelSendTests: XCTestCase {
             case "/api/default-model":
                 XCTFail("Composer model selection must not save profile defaults.")
                 throw URLError(.badURL)
+            case "/api/reasoning":
+                return apiTestJSONResponse(#"{"reasoning_effort": "medium"}"#, for: request)
             default:
                 XCTFail("Unexpected request path: \(request.url?.path ?? "nil")")
                 throw URLError(.badURL)
@@ -4609,7 +4611,7 @@ final class ChatViewModelSendTests: XCTestCase {
         let didStart = await viewModel.sendMessage("Use the selected OpenRouter model")
 
         XCTAssertTrue(didStart)
-        XCTAssertEqual(requestPaths, ["/api/session/update", "/api/chat/start"])
+        XCTAssertEqual(requestPaths, ["/api/session/update", "/api/reasoning", "/api/chat/start"])
         XCTAssertEqual(streamClient.startedURLs.count, 1)
     }
 
@@ -4645,6 +4647,8 @@ final class ChatViewModelSendTests: XCTestCase {
                   "stream_id": "stream-second"
                 }
                 """, for: request)
+            case "/api/reasoning":
+                return apiTestJSONResponse(#"{"reasoning_effort": "medium"}"#, for: request)
             default:
                 XCTFail("Unexpected request path: \(request.url?.path ?? "nil")")
                 throw URLError(.badURL)
@@ -4706,6 +4710,8 @@ final class ChatViewModelSendTests: XCTestCase {
             case "/api/default-model":
                 XCTFail("Custom composer models must not save Settings defaults.")
                 throw URLError(.badURL)
+            case "/api/reasoning":
+                return apiTestJSONResponse(#"{"reasoning_effort": "medium"}"#, for: request)
             default:
                 XCTFail("Unexpected request path: \(request.url?.path ?? "nil")")
                 throw URLError(.badURL)
@@ -4724,7 +4730,7 @@ final class ChatViewModelSendTests: XCTestCase {
         let didStart = await viewModel.sendMessage("Use the custom OpenRouter model")
 
         XCTAssertTrue(didStart)
-        XCTAssertEqual(requestPaths, ["/api/session/update", "/api/chat/start"])
+        XCTAssertEqual(requestPaths, ["/api/session/update", "/api/reasoning", "/api/chat/start"])
         XCTAssertEqual(streamClient.startedURLs.count, 1)
     }
 
@@ -4762,6 +4768,8 @@ final class ChatViewModelSendTests: XCTestCase {
                 XCTAssertEqual(body["profile"] as? String, "work")
                 XCTAssertEqual(body["explicit_model_pick"] as? Bool, true)
                 return apiTestJSONResponse(#"{"session_id": "session-abc", "stream_id": "stream-slash-model"}"#, for: request)
+            case "/api/reasoning":
+                return apiTestJSONResponse(#"{"reasoning_effort": "medium"}"#, for: request)
             default:
                 XCTFail("Unexpected request path: \(request.url?.path ?? "nil")")
                 throw URLError(.badURL)
@@ -4776,7 +4784,7 @@ final class ChatViewModelSendTests: XCTestCase {
 
         XCTAssertEqual(result, .executed(message: nil))
         XCTAssertTrue(didStart)
-        XCTAssertEqual(requestPaths, ["/api/session/update", "/api/chat/start"])
+        XCTAssertEqual(requestPaths, ["/api/session/update", "/api/reasoning", "/api/chat/start"])
         XCTAssertEqual(streamClient.startedURLs.count, 1)
     }
 
@@ -4911,6 +4919,8 @@ final class ChatViewModelSendTests: XCTestCase {
                   }
                 }
                 """, for: request)
+            case "/api/reasoning":
+                return apiTestJSONResponse(#"{"reasoning_effort": "medium"}"#, for: request)
             default:
                 XCTFail("Unexpected request path: \(request.url?.path ?? "nil")")
                 throw URLError(.badURL)
@@ -4926,7 +4936,157 @@ final class ChatViewModelSendTests: XCTestCase {
         XCTAssertEqual(viewModel.selectedModelID, customModel)
         XCTAssertEqual(viewModel.selectedModelProviderID, "openrouter")
         XCTAssertNil(viewModel.composerConfigurationErrorMessage)
-        XCTAssertEqual(requestPaths, ["/api/session/update"])
+        XCTAssertEqual(requestPaths, ["/api/session/update", "/api/reasoning"])
+    }
+
+    @MainActor
+    func testSelectingComposerModelRefreshesEffortGatingAndSnapsUnsupportedEffort() async throws {
+        let limitedModel = "o4-mini"
+        var reasoningQueries: [[String: String?]] = []
+        let viewModel = try makeViewModel(
+            sessionSummary: makeSession(model: "gpt-5.4", modelProvider: "openai", profile: "work")
+        ) { request in
+            switch request.url?.path {
+            case "/api/reasoning" where request.httpMethod == "POST":
+                return apiTestJSONResponse(#"{"ok": true, "reasoning_effort": "xhigh"}"#, for: request)
+            case "/api/session/update":
+                return apiTestJSONResponse("""
+                {
+                  "session": {
+                    "session_id": "session-abc",
+                    "workspace": "/tmp/workspace",
+                    "model": "\(limitedModel)",
+                    "model_provider": "openai",
+                    "profile": "work"
+                  }
+                }
+                """, for: request)
+            case "/api/reasoning":
+                let components = URLComponents(url: try XCTUnwrap(request.url), resolvingAgainstBaseURL: false)
+                reasoningQueries.append(Dictionary(
+                    uniqueKeysWithValues: (components?.queryItems ?? []).map { ($0.name, $0.value) }
+                ))
+                return apiTestJSONResponse("""
+                {
+                  "show_reasoning": true,
+                  "reasoning_effort": "high",
+                  "supported_efforts": ["low", "medium", "high"],
+                  "supports_reasoning_effort": true
+                }
+                """, for: request)
+            default:
+                XCTFail("Unexpected request path: \(request.url?.path ?? "nil")")
+                throw URLError(.badURL)
+            }
+        }
+
+        await viewModel.selectReasoningEffort("xhigh")
+        XCTAssertEqual(viewModel.selectedReasoningEffort, "xhigh")
+
+        await viewModel.selectComposerModel(ModelCatalogOption(
+            id: limitedModel,
+            displayName: limitedModel,
+            providerID: "openai"
+        ))
+
+        // The gating query is scoped to the newly selected model, never stale
+        // session state (upstream #3750 class of bug).
+        XCTAssertEqual(reasoningQueries.count, 1)
+        XCTAssertEqual(reasoningQueries[0]["model"], limitedModel)
+        XCTAssertEqual(reasoningQueries[0]["provider"], "openai")
+        XCTAssertEqual(viewModel.supportedReasoningEfforts, ["low", "medium", "high"])
+        XCTAssertEqual(viewModel.supportsReasoningEffort, true)
+        XCTAssertTrue(viewModel.showsReasoningEffortControl)
+        // "xhigh" is not supported by the new model: snap to the server's
+        // coerced reasoning_effort.
+        XCTAssertEqual(viewModel.selectedReasoningEffort, "high")
+    }
+
+    @MainActor
+    func testSelectingComposerModelHidesEffortControlWhenUnsupported() async throws {
+        let viewModel = try makeViewModel(
+            sessionSummary: makeSession(model: "gpt-5.4", modelProvider: "openai", profile: "work")
+        ) { request in
+            switch request.url?.path {
+            case "/api/session/update":
+                return apiTestJSONResponse("""
+                {
+                  "session": {
+                    "session_id": "session-abc",
+                    "workspace": "/tmp/workspace",
+                    "model": "no-effort-model",
+                    "model_provider": "openai",
+                    "profile": "work"
+                  }
+                }
+                """, for: request)
+            case "/api/reasoning":
+                return apiTestJSONResponse("""
+                {
+                  "show_reasoning": true,
+                  "reasoning_effort": "",
+                  "supported_efforts": [],
+                  "supports_reasoning_effort": false
+                }
+                """, for: request)
+            default:
+                XCTFail("Unexpected request path: \(request.url?.path ?? "nil")")
+                throw URLError(.badURL)
+            }
+        }
+
+        XCTAssertTrue(viewModel.showsReasoningEffortControl)
+
+        await viewModel.selectComposerModel(ModelCatalogOption(
+            id: "no-effort-model",
+            displayName: "no-effort-model",
+            providerID: "openai"
+        ))
+
+        XCTAssertEqual(viewModel.supportedReasoningEfforts, [])
+        XCTAssertEqual(viewModel.supportsReasoningEffort, false)
+        XCTAssertFalse(viewModel.showsReasoningEffortControl)
+    }
+
+    @MainActor
+    func testEffortGatingRefreshFailureKeepsExistingGating() async throws {
+        let viewModel = try makeViewModel(
+            sessionSummary: makeSession(model: "gpt-5.4", modelProvider: "openai", profile: "work")
+        ) { request in
+            switch request.url?.path {
+            case "/api/session/update":
+                return apiTestJSONResponse("""
+                {
+                  "session": {
+                    "session_id": "session-abc",
+                    "workspace": "/tmp/workspace",
+                    "model": "flaky-model",
+                    "model_provider": "openai",
+                    "profile": "work"
+                  }
+                }
+                """, for: request)
+            case "/api/reasoning":
+                throw URLError(.timedOut)
+            default:
+                XCTFail("Unexpected request path: \(request.url?.path ?? "nil")")
+                throw URLError(.badURL)
+            }
+        }
+
+        let didSelect = await viewModel.selectComposerModel(ModelCatalogOption(
+            id: "flaky-model",
+            displayName: "flaky-model",
+            providerID: "openai"
+        ))
+
+        // The model change still succeeds; the gating silently keeps its
+        // previous (legacy/full) state.
+        XCTAssertTrue(didSelect)
+        XCTAssertEqual(viewModel.selectedModelID, "flaky-model")
+        XCTAssertNil(viewModel.supportedReasoningEfforts)
+        XCTAssertTrue(viewModel.showsReasoningEffortControl)
+        XCTAssertNil(viewModel.composerConfigurationErrorMessage)
     }
 
     @MainActor
