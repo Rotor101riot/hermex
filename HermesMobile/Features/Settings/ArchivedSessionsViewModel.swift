@@ -9,6 +9,9 @@ final class ArchivedSessionsViewModel {
     private(set) var unarchivingSessionIDs: Set<String> = []
     private(set) var errorMessage: String?
     private(set) var actionErrorMessage: String?
+    /// Last raw failure, exposed so the view can forward it to the shared
+    /// API-error handler (401 → re-login), mirroring `SessionListViewModel`.
+    private(set) var lastError: Error?
 
     private let client: APIClient
 
@@ -24,11 +27,18 @@ final class ArchivedSessionsViewModel {
         isLoading = true
         errorMessage = nil
         actionErrorMessage = nil
+        lastError = nil
 
         do {
-            let response = try await client.sessions()
+            // `include_archived=1` is required — the default response excludes
+            // archived rows entirely, which made this view permanently empty
+            // (issue #17). The merged response keeps the visible rows too; each
+            // row carries an `archived` flag (verified against upstream routes.py
+            // @312d3fab and the live server), so filter client-side.
+            let response = try await client.sessions(includeArchived: true)
             sessions = (response.sessions ?? []).filter { $0.archived == true }
         } catch {
+            lastError = error
             errorMessage = error.localizedDescription
         }
 
@@ -50,15 +60,25 @@ final class ArchivedSessionsViewModel {
 
         unarchivingSessionIDs.insert(sessionId)
         actionErrorMessage = nil
+        lastError = nil
         defer {
             unarchivingSessionIDs.remove(sessionId)
         }
 
         do {
-            _ = try await client.archiveSession(id: sessionId, archived: false)
+            let response = try await client.archiveSession(id: sessionId, archived: false)
+            // Rejections (subagent / read-only CLI sessions) arrive as HTTP 400
+            // and throw above; a 200 body with an `error` field is surfaced too
+            // so the server's own message is always shown (issue #17).
+            if let error = Self.nonEmpty(response.error) {
+                restore(removedSession)
+                actionErrorMessage = error
+                return false
+            }
             return true
         } catch {
             restore(removedSession)
+            lastError = error
             actionErrorMessage = error.localizedDescription
             return false
         }

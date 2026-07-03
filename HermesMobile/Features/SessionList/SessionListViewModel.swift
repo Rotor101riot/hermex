@@ -56,6 +56,10 @@ final class SessionListViewModel {
     private(set) var switchingActiveProfileName: String?
     private(set) var activeProfileErrorMessage: String?
     private(set) var mutatingSessionIDs: Set<String> = []
+    /// Total archived sessions reported by the last successful list load
+    /// (`archived_count`, issue #17). nil until a load succeeds or when an older
+    /// server omits the field — the Archived entry stays hidden then.
+    private(set) var archivedCount: Int?
 
     private(set) var remoteContentSearchSessionIDs: [String] = []
     private var activeRemoteSearchQuery: String?
@@ -151,6 +155,7 @@ final class SessionListViewModel {
             let response = try await client.sessions()
             let visibleSessions = (response.sessions ?? []).filter { $0.archived != true }
             applySessions(visibleSessions, animation: animation)
+            archivedCount = response.archivedCount
             isViewingCachedData = false
 
             if let modelContext {
