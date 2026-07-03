@@ -3250,9 +3250,11 @@ final class ChatViewModel {
         }
 
         stopListening()
-        // Route speech to the speaker (not the receiver/earpiece) before speaking;
-        // released again in `finishListening()` once playback ends. See #252.
-        listenAudioSession.activate()
+        // The audio session is NOT activated here: `/api/tts` can be slow or
+        // unreachable, and activating the non-mixable playback session before the
+        // fetch would silence other audio while Hermex has nothing to play (review
+        // on #35). Activation happens at the two playback-start points instead —
+        // `startServerAudioPlayback` and `speakWithOnDeviceSynthesizer`.
         listeningMessageID = context.messageID
 
         guard ServerTTSPolicy.shouldUseServerTTS(for: listenText) else {
@@ -4224,6 +4226,11 @@ final class ChatViewModel {
     /// Speaks `text` with the on-device `AVSpeechSynthesizer` — the pre-#15 Listen
     /// path, kept as the offline/failure fallback for server TTS.
     private func speakWithOnDeviceSynthesizer(_ text: String) {
+        // Route speech to the speaker (not the receiver/earpiece) immediately before
+        // speech starts — not when the Listen tap lands — so a slow `/api/tts` fetch
+        // never interrupts other audio while Hermex is silent (review on #35).
+        // Released again in `finishListening()` once playback ends. See #252.
+        listenAudioSession.activate()
         let speechSynthesizer = speechSynthesizerForListening()
         let utterance = AVSpeechUtterance(string: text)
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate
@@ -4244,6 +4251,11 @@ final class ChatViewModel {
             self?.handleListenPlayerCompletion(for: playerID)
         }
 
+        // Activate the session only once decodable audio is in hand, immediately
+        // before playback, so the network wait never held it (review on #35). If
+        // `play()` still fails, the on-device fallback re-activates for itself —
+        // `activate()` is idempotent, and `finishListening()` releases it either way.
+        listenAudioSession.activate()
         guard player.play() else {
             return false
         }

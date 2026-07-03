@@ -98,6 +98,10 @@ final class ChatViewModelSendTests: XCTestCase {
         ))
 
         viewModel.toggleListening(to: context)
+        // Regression (review on #35): the tap itself must NOT activate the session —
+        // a slow `/api/tts` fetch would otherwise silence other audio while Hermex
+        // has nothing to play. Activation belongs to the moment playback starts.
+        XCTAssertEqual(audioSession.activateCount, 0)
         await viewModel.listenPreparationTask?.value
 
         XCTAssertEqual(audioSession.activateCount, 1)
@@ -232,6 +236,9 @@ final class ChatViewModelSendTests: XCTestCase {
         ))
 
         viewModel.toggleListening(to: context)
+        // Regression (review on #35): no session activation while the fetch is in
+        // flight — only once decoded server audio is about to play.
+        XCTAssertEqual(audioSession.activateCount, 0)
         await viewModel.listenPreparationTask?.value
 
         // Server audio plays; the on-device synthesizer is never touched.
